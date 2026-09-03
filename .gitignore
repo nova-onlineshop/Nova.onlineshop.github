@@ -52,3 +52,225 @@ m4/lt~obsolete.m4
 # can automatically generate from config.status script
 # (which is called by configure script))
 Makefile
+
+
+
+npm i -g @nestjs/cli
+nest new nava-backend
+
+
+cd nava-backend
+npm install @prisma/client prisma
+npm install @nestjs/jwt @nestjs/passport passport passport-jwt
+npm install bcrypt
+npm install socket.io @nestjs/websockets
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  RIDER
+  DRIVER
+}
+
+enum RideStatus {
+  REQUESTED
+  ACCEPTED
+  STARTED
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  password  String?
+  role      Role
+  createdAt DateTime @default(now())
+
+  driver    Driver?
+  rides     Ride[]   @relation("RiderRides")
+}
+
+model Driver {
+  id          String  @id @default(uuid())
+  userId      String  @unique
+  isOnline    Boolean @default(false)
+  rating      Float   @default(5.0)
+
+  user        User    @relation(fields: [userId], references: [id])
+}
+
+model Ride {
+  id          String     @id @default(uuid())
+  riderId     String
+  driverId    String?
+  status      RideStatus @default(REQUESTED)
+  price       Float?
+  distance    Float?
+
+  rider       User   @relation("RiderRides", fields: [riderId], references: [id])
+  createdAt   DateTime @default(now())
+}
+
+import { Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+@Injectable()
+export class AuthService {
+
+  async register(phone: string, password: string, role: any) {
+    const hashed = await bcrypt.hash(password, 10);
+
+    return prisma.user.create({
+      data: {
+        phone,
+        password: hashed,
+        role,
+      },
+    });
+  }
+
+  async validateUser(phone: string, password: string) {
+    const user = await prisma.user.findUnique({ where: { phone } });
+
+    if (!user) return null;
+
+    const match = await bcrypt.compare(password, user.password || '');
+    if (!match) return null;
+
+    return user;
+  }
+}
+
+import { Controller, Post, Body } from '@nestjs/common';
+import { AuthService } from './auth.service';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private authService: AuthService) {}
+
+  @Post('register')
+  register(@Body() body: any) {
+    return this.authService.register(
+      body.phone,
+      body.password,
+      body.role,
+    );
+  }
+}
+
+import { Injectable } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+@Injectable()
+export class RideService {
+
+  async requestRide(riderId: string, price: number, distance: number) {
+    return prisma.ride.create({
+      data: {
+        riderId,
+        price,
+        distance,
+        status: 'REQUESTED',
+      },
+    });
+  }
+
+  async acceptRide(rideId: string, driverId: string) {
+    return prisma.ride.update({
+      where: { id: rideId },
+      data: {
+        driverId,
+        status: 'ACCEPTED',
+      },
+    });
+  }
+
+  async startRide(rideId: string) {
+    return prisma.ride.update({
+      where: { id: rideId },
+      data: { status: 'STARTED' },
+    });
+  }
+
+  async completeRide(rideId: string) {
+    return prisma.ride.update({
+      where: { id: rideId },
+      data: { status: 'COMPLETED' },
+    });
+  }
+}
+
+import { Controller, Post, Body } from '@nestjs/common';
+import { RideService } from './ride.service';
+
+@Controller('rides')
+export class RideController {
+  constructor(private rideService: RideService) {}
+
+  @Post('request')
+  request(@Body() body: any) {
+    return this.rideService.requestRide(
+      body.riderId,
+      body.price,
+      body.distance,
+    );
+  }
+
+  @Post('accept')
+  accept(@Body() body: any) {
+    return this.rideService.acceptRide(
+      body.rideId,
+      body.driverId,
+    );
+  }
+}
+
+import {
+  WebSocketGateway,
+  SubscribeMessage,
+  MessageBody,
+  WebSocketServer,
+} from '@nestjs/websockets';
+
+import { Server } from 'socket.io';
+
+@WebSocketGateway({ cors: true })
+export class RideGateway {
+  @WebSocketServer()
+  server: Server;
+
+  @SubscribeMessage('driver_location')
+  handleLocation(@MessageBody() data: any) {
+    this.server.emit('location_update', data);
+  }
+
+  @SubscribeMessage('ride_update')
+  handleRideUpdate(@MessageBody() data: any) {
+    this.server.emit('ride_status', data);
+  }
+}
+
+async findNearbyDrivers() {
+  return prisma.driver.findMany({
+    where: { isOnline: true },
+  });
+}
+
+npx prisma migrate dev
+npm run start:dev
+
+
+
